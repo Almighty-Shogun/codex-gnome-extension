@@ -42,8 +42,6 @@ Every 30 seconds the extension:
 3. If it changed, reads recent session files and finds the newest `event_msg` with a `token_count` payload containing `rate_limits`, ordered by the event timestamp from the payload.
 4. Updates the panel label and popup contents from that snapshot.
 
-Opening the popup also triggers an immediate refresh, so the detailed view does not have to wait for the next poll tick.
-
 ## Installation & Updating
 
 ```bash

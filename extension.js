@@ -79,7 +79,6 @@ class CodexUsageIndicator extends PanelMenu.Button {
         this.menu.setSourceAlignment(0.5);
 
         this.menu.box.add_style_class_name("codex-usage-menu");
-        this.menu.connect("open-state-changed", (...[, isOpen]) => isOpen && this._refresh());
 
         this._refresh();
         this._refreshTimeoutId = GLib.timeout_add_seconds(
