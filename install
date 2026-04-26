@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UUID="$(
+python3 - <<'PY' "${SOURCE_DIR}/metadata.json"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    print(json.load(f)["uuid"])
+PY
+)"
+TARGET_DIR="${HOME}/.local/share/gnome-shell/extensions/${UUID}"
+
+rm -rf "${TARGET_DIR}"
+mkdir -p "${TARGET_DIR}"
+
+cp "${SOURCE_DIR}/metadata.json" "${TARGET_DIR}/"
+cp "${SOURCE_DIR}/extension.js" "${TARGET_DIR}/"
+cp "${SOURCE_DIR}/stylesheet.css" "${TARGET_DIR}/"
+cp -r "${SOURCE_DIR}/icons" "${TARGET_DIR}/"
+
+echo "Installed to ${TARGET_DIR}"
+echo "Enable with: gnome-extensions enable ${UUID}"
