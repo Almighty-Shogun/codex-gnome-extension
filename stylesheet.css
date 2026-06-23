@@ -20,6 +20,13 @@
     opacity: 0.78;
 }
 
+.codex-usage-limit-notice {
+    min-width: 240px;
+    text-align: center;
+    color: #f6c177;
+    font-weight: 700;
+}
+
 .codex-usage-section-title {
     font-weight: 500;
     opacity: 0.72;

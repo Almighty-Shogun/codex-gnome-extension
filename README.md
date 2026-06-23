@@ -22,6 +22,7 @@ Selecting the indicator opens a popup with:
 - Weekly usage remaining
 - Reset timestamps for both limits
 - Remaining credits, when present in the Codex session data
+- A notice when the 5-hour or weekly usage window has been exhausted
 - A status line showing when the latest Codex update was seen
 
 ## Requirements
@@ -40,7 +41,8 @@ Every 30 seconds the extension:
 1. Scans `~/.codex/sessions` for recent `.jsonl` session files.
 2. Checks whether the newest session file has changed since the last poll, using microsecond-precision file timestamps.
 3. If it changed, reads recent session files and finds the newest `event_msg` with a `token_count` payload containing `rate_limits`, ordered by the event timestamp from the payload.
-4. Updates the panel label and popup contents from that snapshot.
+4. Merges that snapshot with the last known usable values so temporary missing fields do not wipe the display.
+5. Updates the panel label and popup contents from the resolved snapshot.
 
 ## Installation & Updating
 
@@ -64,5 +66,7 @@ gnome-extensions enable codex-usage@almighty-shogun
 ## Notes
 - The extension reads Codex session data from `~/.codex/sessions`, it does not query a live API directly.
 - The extension displays `Usage unavailable` until a valid Codex usage snapshot is found.
-- Credits are shown exactly as reported by Codex. If credits are absent, the value falls back to `0`.
+- Credits are normalized before display. For example, credit objects with fields like `balance`, `has_credits`, or `unlimited` are rendered as a simple readable value.
+- The extension keeps the last known usable usage values if a newer poll cannot produce a complete snapshot, which avoids dropping back to `--` after a limit is reached.
+- When a limit reaches `100%` used, the popup shows an explicit notice for the exhausted 5-hour or weekly window.
 - The menu width is intentionally compact and the progress bars are sized to match.

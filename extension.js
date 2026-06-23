@@ -30,6 +30,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
         this._latestSessionFilePath = null;
         this._latestSessionFileModifiedAt = 0;
         this._lastSnapshotSortKey = null;
+        this._lastResolvedSnapshot = null;
 
         const box = new St.BoxLayout({
             style_class: "panel-status-menu-box",
@@ -73,6 +74,13 @@ class CodexUsageIndicator extends PanelMenu.Button {
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this.menu.addMenuItem(this._creditsItem.item);
+        this._limitNoticeSeparator = new PopupMenu.PopupSeparatorMenuItem();
+        this._limitNoticeSeparator.visible = false;
+        this.menu.addMenuItem(this._limitNoticeSeparator);
+
+        this._limitNoticeItem = this._createCenteredMessageItem("codex-usage-limit-notice");
+        this._limitNoticeItem.item.visible = false;
+        this.menu.addMenuItem(this._limitNoticeItem.item);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
         this.menu.addMenuItem(this._statusItem.item);
@@ -98,12 +106,15 @@ class CodexUsageIndicator extends PanelMenu.Button {
     }
 
     _refresh() {
-        const snapshot = this._readLatestSnapshot();
+        const rawSnapshot = this._readLatestSnapshot();
+        const snapshot = this._resolveSnapshot(rawSnapshot);
 
         if (!snapshot) {
             if (this._lastSnapshotSortKey !== null || this._label.text === "Loading Codex usage...") {
                 this._label.text = "Usage unavailable";
                 this._statusItem.label.text = "Latest Codex update: unavailable";
+                this._limitNoticeItem.item.visible = false;
+                this._limitNoticeSeparator.visible = false;
 
                 this._setUsageMenuItemUnavailable(this._fiveHourItem);
                 this._setUsageMenuItemUnavailable(this._weeklyItem);
@@ -114,7 +125,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
             return GLib.SOURCE_CONTINUE;
         }
 
-        if (snapshot.unchanged) return GLib.SOURCE_CONTINUE;
+        if (rawSnapshot?.unchanged) return GLib.SOURCE_CONTINUE;
 
         this._label.text = `${this._formatRemainingUsage(snapshot.primary)} - ${this._formatRemainingUsage(snapshot.secondary)}`;
 
@@ -127,12 +138,14 @@ class CodexUsageIndicator extends PanelMenu.Button {
         this._setUsageMenuItem(this._weeklyItem, snapshot.secondary, nowSeconds);
 
         this._creditsItem.valueLabel.text = this._formatCredits(snapshot.credits);
+        this._updateLimitNotice(snapshot);
         this._lastSnapshotSortKey = snapshot.sortKey;
+        this._lastResolvedSnapshot = snapshot;
 
         return GLib.SOURCE_CONTINUE;
     }
 
-    _createCenteredMessageItem() {
+    _createCenteredMessageItem(styleClass = "codex-usage-status-label") {
         const item = new PopupMenu.PopupBaseMenuItem({
             reactive: false,
             can_focus: false,
@@ -142,7 +155,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
             text: "",
             x_expand: true,
             x_align: Clutter.ActorAlign.CENTER,
-            style_class: "codex-usage-status-label",
+            style_class: styleClass,
         });
 
         item.add_child(label);
@@ -283,6 +296,25 @@ class CodexUsageIndicator extends PanelMenu.Button {
         entry.barFill.set_width(0);
         entry.barFill.remove_style_pseudo_class("warning");
         entry.barFill.remove_style_pseudo_class("critical");
+    }
+
+    _resolveSnapshot(snapshot) {
+        if (snapshot?.unchanged)
+            return this._lastResolvedSnapshot ? { ...this._lastResolvedSnapshot, unchanged: true } : snapshot;
+
+        if (!snapshot)
+            return this._lastResolvedSnapshot;
+
+        const previous = this._lastResolvedSnapshot;
+        return {
+            ...snapshot,
+            primary: snapshot.primary ?? previous?.primary ?? null,
+            secondary: snapshot.secondary ?? previous?.secondary ?? null,
+            credits: snapshot.credits !== undefined ? snapshot.credits : previous?.credits ?? null,
+            timestamp: snapshot.timestamp ?? previous?.timestamp ?? null,
+            fileModifiedAt: snapshot.fileModifiedAt ?? previous?.fileModifiedAt ?? 0,
+            sortKey: snapshot.sortKey ?? this._getSnapshotSortKey(snapshot),
+        };
     }
 
     _readLatestSnapshot() {
@@ -427,10 +459,36 @@ class CodexUsageIndicator extends PanelMenu.Button {
             return `${credits}`;
 
         if (typeof credits === "object") {
-            return "remaining" in credits ? `${credits.remaining}` : JSON.stringify(credits);
+            if (credits.unlimited)
+                return "Unlimited";
+
+            if ("remaining" in credits)
+                return `${credits.remaining}`;
+
+            if ("balance" in credits)
+                return `${credits.balance}`;
+
+            if ("has_credits" in credits && !credits.has_credits)
+                return "0";
+
+            return JSON.stringify(credits);
         }
 
         return String(credits);
+    }
+
+    _updateLimitNotice(snapshot) {
+        const notices = [];
+
+        if (this._isLimitReached(snapshot?.primary))
+            notices.push("You have reached your 5-hour usage.");
+
+        if (this._isLimitReached(snapshot?.secondary))
+            notices.push("You have reached your weekly usage.");
+
+        this._limitNoticeItem.label.text = notices.join(" ");
+        this._limitNoticeItem.item.visible = notices.length > 0;
+        this._limitNoticeSeparator.visible = notices.length > 0;
     }
 
     _formatStatusLine(value) {
@@ -457,6 +515,10 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
     _getUsedPercent(limit) {
         return clampPercent(limit?.used_percent ?? 0);
+    }
+
+    _isLimitReached(limit) {
+        return !!limit && this._getUsedPercent(limit) >= 100;
     }
 
     _getLocalDateTimeFromIso(isoTimestamp) {
