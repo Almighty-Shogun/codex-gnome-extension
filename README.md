@@ -63,6 +63,15 @@ Enable the extension:
 gnome-extensions enable codex-usage@almighty-shogun
 ```
 
+To update an existing clone and reinstall the extension:
+
+```bash
+cd codex-gnome-extension
+./update
+```
+
+The update script fetches changes from GitHub, fast-forwards the current branch, and runs the installer.
+
 ## Notes
 - The extension reads Codex session data from `~/.codex/sessions`, it does not query a live API directly.
 - The extension displays `Usage unavailable` until a valid Codex usage snapshot is found.
