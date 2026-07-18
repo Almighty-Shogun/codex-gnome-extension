@@ -15,6 +15,8 @@ const REFRESH_INTERVAL_SECONDS = 30;
 const MAX_SESSION_FILES = 20;
 const PROGRESS_BAR_WIDTH = 220;
 const MIN_VISIBLE_FILL_WIDTH = 3;
+const FIVE_HOUR_WINDOW_MINUTES = 300;
+const WEEKLY_WINDOW_MINUTES = 10080;
 
 function clampPercent(value) {
     return Math.max(0, Math.min(100, Math.round(value ?? 0)));
@@ -27,8 +29,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
         this._extension = extension;
         this._refreshTimeoutId = null;
-        this._latestSessionFilePath = null;
-        this._latestSessionFileModifiedAt = 0;
+        this._sessionFileCache = new Map();
         this._lastSnapshotSortKey = null;
         this._lastResolvedSnapshot = null;
 
@@ -62,7 +63,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
         box.add_child(this._label);
         this.add_child(box);
 
-        this._fiveHourItem = this._createUsageMenuItem("5 hour usage limit");
+        this._fiveHourItem = this._createUsageMenuItem("5-hour usage limit");
         this._weeklyItem = this._createUsageMenuItem("Weekly usage limit");
         this._creditsItem = this._createValueMenuItem("Credits remaining");
         this._statusItem = this._createCenteredMessageItem();
@@ -106,41 +107,42 @@ class CodexUsageIndicator extends PanelMenu.Button {
     }
 
     _refresh() {
-        const rawSnapshot = this._readLatestSnapshot();
-        const snapshot = this._resolveSnapshot(rawSnapshot);
+        try {
+            const rawSnapshot = this._readLatestSnapshot();
+            const snapshot = this._resolveSnapshot(rawSnapshot);
 
-        if (!snapshot) {
-            if (this._lastSnapshotSortKey !== null || this._label.text === "Loading Codex usage...") {
-                this._label.text = "Usage unavailable";
-                this._statusItem.label.text = "Latest Codex update: unavailable";
-                this._limitNoticeItem.item.visible = false;
-                this._limitNoticeSeparator.visible = false;
+            if (!snapshot) {
+                if (this._lastSnapshotSortKey !== null || this._label.text === "Loading Codex usage...") {
+                    this._label.text = "Usage unavailable";
+                    this._statusItem.label.text = "Latest Codex update: unavailable";
+                    this._limitNoticeItem.item.visible = false;
+                    this._limitNoticeSeparator.visible = false;
 
-                this._setUsageMenuItemUnavailable(this._fiveHourItem);
-                this._setUsageMenuItemUnavailable(this._weeklyItem);
+                    this._setUsageMenuItemUnavailable(this._fiveHourItem);
+                    this._setUsageMenuItemUnavailable(this._weeklyItem);
 
-                this._creditsItem.valueLabel.text = "0";
-                this._lastSnapshotSortKey = null;
+                    this._creditsItem.valueLabel.text = "0";
+                    this._lastSnapshotSortKey = null;
+                }
+
+                return GLib.SOURCE_CONTINUE;
             }
-            return GLib.SOURCE_CONTINUE;
+
+            this._label.text = this._formatPanelLabel(snapshot);
+
+            const statusTimestamp = snapshot.timestamp ?? this._getIsoTimestampFromFileModifiedAt(snapshot.fileModifiedAt);
+            this._statusItem.label.text = this._formatStatusLine(statusTimestamp);
+
+            this._setUsageMenuItem(this._fiveHourItem, snapshot.fiveHour, snapshot);
+            this._setUsageMenuItem(this._weeklyItem, snapshot.weekly, snapshot);
+
+            this._creditsItem.valueLabel.text = this._formatCredits(snapshot.credits);
+            this._updateLimitNotice(snapshot);
+            this._lastSnapshotSortKey = snapshot.sortKey;
+            this._lastResolvedSnapshot = snapshot;
+        } catch (error) {
+            log(`${UUID}: Failed to refresh usage: ${error.message}`);
         }
-
-        if (rawSnapshot?.unchanged) return GLib.SOURCE_CONTINUE;
-
-        this._label.text = `${this._formatRemainingUsage(snapshot.primary)} - ${this._formatRemainingUsage(snapshot.secondary)}`;
-
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        const statusTimestamp = snapshot.timestamp ?? this._getIsoTimestampFromFileModifiedAt(snapshot.fileModifiedAt);
-
-        this._statusItem.label.text = this._formatStatusLine(statusTimestamp, nowSeconds);
-
-        this._setUsageMenuItem(this._fiveHourItem, snapshot.primary, nowSeconds);
-        this._setUsageMenuItem(this._weeklyItem, snapshot.secondary, nowSeconds);
-
-        this._creditsItem.valueLabel.text = this._formatCredits(snapshot.credits);
-        this._updateLimitNotice(snapshot);
-        this._lastSnapshotSortKey = snapshot.sortKey;
-        this._lastResolvedSnapshot = snapshot;
 
         return GLib.SOURCE_CONTINUE;
     }
@@ -261,7 +263,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
         };
     }
 
-    _setUsageMenuItem(entry, limit, nowSeconds) {
+    _setUsageMenuItem(entry, limit, snapshot) {
         if (!limit) {
             this._setUsageMenuItemUnavailable(entry);
             return;
@@ -269,9 +271,12 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
         const remainingPercent = this._getRemainingPercent(limit);
         const usedPercent = this._getUsedPercent(limit);
+        const isCurrent = this._isCurrentLimit(limit, snapshot);
 
         entry.valueLabel.text = `${remainingPercent}% remaining`;
-        entry.resetLabel.text = `Resets: ${this._formatReset(limit.resets_at)}`;
+        entry.resetLabel.text = isCurrent
+            ? `Resets: ${this._formatReset(limit.resets_at)}`
+            : `Last reported: ${this._formatLimitSeenAt(limit)}`;
 
         const fillWidth = usedPercent === 0 ? 0 : Math.max(MIN_VISIBLE_FILL_WIDTH, Math.round((usedPercent / 100) * PROGRESS_BAR_WIDTH));
 
@@ -290,7 +295,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
     }
 
     _setUsageMenuItemUnavailable(entry) {
-        entry.valueLabel.text = "Unavailable";
+        entry.valueLabel.text = "Not reported";
         entry.resetLabel.text = "Resets: unavailable";
 
         entry.barFill.set_width(0);
@@ -299,65 +304,101 @@ class CodexUsageIndicator extends PanelMenu.Button {
     }
 
     _resolveSnapshot(snapshot) {
-        if (snapshot?.unchanged)
-            return this._lastResolvedSnapshot ? { ...this._lastResolvedSnapshot, unchanged: true } : snapshot;
-
         if (!snapshot)
             return this._lastResolvedSnapshot;
 
         const previous = this._lastResolvedSnapshot;
         return {
             ...snapshot,
-            primary: snapshot.primary ?? previous?.primary ?? null,
-            secondary: snapshot.secondary ?? previous?.secondary ?? null,
+            fiveHour: this._resolveLimit(snapshot.fiveHour, previous?.fiveHour),
+            weekly: this._resolveLimit(snapshot.weekly, previous?.weekly),
             credits: snapshot.credits !== undefined ? snapshot.credits : previous?.credits ?? null,
             timestamp: snapshot.timestamp ?? previous?.timestamp ?? null,
             fileModifiedAt: snapshot.fileModifiedAt ?? previous?.fileModifiedAt ?? 0,
-            sortKey: snapshot.sortKey ?? this._getSnapshotSortKey(snapshot),
+            sortKey: snapshot.sortKey ?? previous?.sortKey ?? this._getSnapshotSortKey(snapshot),
         };
+    }
+
+    _resolveLimit(currentLimit, previousLimit) {
+        const limit = currentLimit ?? previousLimit ?? null;
+
+        return this._isLimitRelevant(limit) ? limit : null;
     }
 
     _readLatestSnapshot() {
         const sessionRoot = Gio.File.new_for_path(GLib.build_filenamev([GLib.get_home_dir(), ".codex", "sessions"]));
 
         const sessionFiles = this._listSessionFiles(sessionRoot)
-            .sort((a, b) => this._getFileModifiedAt(b) - this._getFileModifiedAt(a))
+            .map(file => ({
+                file,
+                path: file.get_path(),
+                modifiedAt: this._getFileModifiedAt(file),
+            }))
+            .sort((a, b) => b.modifiedAt - a.modifiedAt)
             .slice(0, MAX_SESSION_FILES);
 
-        const latestSessionFile = sessionFiles[0] ?? null;
-        const latestSessionFilePath = latestSessionFile?.get_path() ?? null;
-        const latestSessionFileModifiedAt = latestSessionFile ? this._getFileModifiedAt(latestSessionFile) : 0;
-
-        if (latestSessionFilePath && latestSessionFilePath === this._latestSessionFilePath && latestSessionFileModifiedAt === this._latestSessionFileModifiedAt) {
-            return {
-                unchanged: true
-            };
-        }
-
-        this._latestSessionFilePath = latestSessionFilePath;
-        this._latestSessionFileModifiedAt = latestSessionFileModifiedAt;
-
         const snapshots = [];
+        const activeSessionFilePaths = new Set();
 
-        for (const file of sessionFiles) {
-            const snapshot = this._extractSnapshotFromFile(file);
+        for (const sessionFile of sessionFiles) {
+            activeSessionFilePaths.add(sessionFile.path);
 
-            if (snapshot)
-            {
-                snapshots.push(snapshot);
+            const cached = this._sessionFileCache.get(sessionFile.path);
+            if (cached && cached.modifiedAt === sessionFile.modifiedAt) {
+                snapshots.push(...cached.snapshots);
+                continue;
             }
+
+            const fileSnapshots = this._extractSnapshotsFromFile(sessionFile.file, sessionFile.modifiedAt);
+            this._sessionFileCache.set(sessionFile.path, {
+                modifiedAt: sessionFile.modifiedAt,
+                snapshots: fileSnapshots,
+            });
+            snapshots.push(...fileSnapshots);
         }
 
-        snapshots.sort((a, b) => this._getSnapshotSortKey(b) - this._getSnapshotSortKey(a));
+        for (const cachedPath of this._sessionFileCache.keys()) {
+            if (!activeSessionFilePaths.has(cachedPath))
+                this._sessionFileCache.delete(cachedPath);
+        }
 
-        const latestSnapshot = snapshots[0] ?? null;
+        let latestSnapshot = null;
+        let latestFiveHour = null;
+        let latestWeekly = null;
+        let latestCredits = undefined;
+        let latestCreditsSortKey = 0;
+
+        for (const snapshot of snapshots) {
+            if (!latestSnapshot || snapshot.sortKey > latestSnapshot.sortKey)
+                latestSnapshot = snapshot;
+
+            if (snapshot.credits !== undefined && snapshot.sortKey > latestCreditsSortKey) {
+                latestCredits = snapshot.credits;
+                latestCreditsSortKey = snapshot.sortKey;
+            }
+
+            if (snapshot.fiveHour && this._isLimitRelevant(snapshot.fiveHour) && (!latestFiveHour || snapshot.fiveHour.sortKey > latestFiveHour.sortKey))
+                latestFiveHour = snapshot.fiveHour;
+
+            if (snapshot.weekly && this._isLimitRelevant(snapshot.weekly) && (!latestWeekly || snapshot.weekly.sortKey > latestWeekly.sortKey))
+                latestWeekly = snapshot.weekly;
+        }
 
         if (!latestSnapshot)
         {
             this._lastSnapshotSortKey = null;
+            return null;
         }
 
-        return latestSnapshot ? { ...latestSnapshot, sortKey: this._getSnapshotSortKey(latestSnapshot) } : null;
+        return {
+            timestamp: latestSnapshot.timestamp,
+            fileModifiedAt: latestSnapshot.fileModifiedAt,
+            sortKey: latestSnapshot.sortKey,
+            fiveHour: latestFiveHour,
+            weekly: latestWeekly,
+            credits: latestCredits,
+            planType: latestSnapshot.planType,
+        };
     }
 
     _listSessionFiles(root) {
@@ -400,7 +441,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
         return files;
     }
 
-    _extractSnapshotFromFile(file) {
+    _extractSnapshotsFromFile(file, fileModifiedAt) {
         let contents;
 
         try {
@@ -408,10 +449,12 @@ class CodexUsageIndicator extends PanelMenu.Button {
         } catch (error) {
             log(`${UUID}: Failed to read ${file.get_path()}: ${error.message}`);
 
-            return null;
+            return [];
         }
 
+        const snapshots = [];
         const lines = new TextDecoder().decode(contents).trim().split("\n");
+
         for (let index = lines.length - 1; index >= 0; index -= 1) {
             const line = lines[index].trim();
 
@@ -430,17 +473,89 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
             if (parsed?.type !== "event_msg" || payload?.type !== "token_count" || !rateLimits) continue;
 
-            return {
-                timestamp: parsed.timestamp ?? null,
-                fileModifiedAt: this._getFileModifiedAt(file),
-                primary: rateLimits.primary ?? null,
-                secondary: rateLimits.secondary ?? null,
+            const timestamp = parsed.timestamp ?? null;
+            const sortKey = this._getTimestampSortKey(timestamp) || fileModifiedAt;
+            const snapshot = {
+                timestamp,
+                fileModifiedAt,
+                sortKey,
+                fiveHour: null,
+                weekly: null,
                 credits: rateLimits.credits,
                 planType: rateLimits.plan_type ?? null,
             };
+            const limits = this._getLimitsByWindow(rateLimits, {
+                timestamp,
+                fileModifiedAt,
+                sortKey,
+            });
+
+            snapshot.fiveHour = limits.fiveHour;
+            snapshot.weekly = limits.weekly;
+            snapshots.push(snapshot);
         }
 
-        return null;
+        return snapshots;
+    }
+
+    _getLimitsByWindow(rateLimits, metadata) {
+        const limits = {
+            fiveHour: null,
+            weekly: null,
+        };
+
+        for (const key of ["primary", "secondary"]) {
+            const limit = this._withLimitMetadata(rateLimits?.[key], metadata);
+
+            if (!limit) continue;
+
+            if (limit.window_minutes === FIVE_HOUR_WINDOW_MINUTES)
+                limits.fiveHour = limit;
+
+            if (limit.window_minutes === WEEKLY_WINDOW_MINUTES)
+                limits.weekly = limit;
+        }
+
+        return limits;
+    }
+
+    _withLimitMetadata(limit, metadata) {
+        if (!limit || typeof limit !== "object")
+            return null;
+
+        const windowMinutes = Number(limit.window_minutes);
+
+        if (!Number.isFinite(windowMinutes))
+            return null;
+
+        return {
+            ...limit,
+            window_minutes: windowMinutes,
+            timestamp: metadata.timestamp,
+            fileModifiedAt: metadata.fileModifiedAt,
+            sortKey: metadata.sortKey,
+        };
+    }
+
+    _formatPanelLabel(snapshot) {
+        const fiveHour = snapshot?.fiveHour ?? null;
+        const weekly = snapshot?.weekly ?? null;
+        const fiveHourCurrent = this._isCurrentLimit(fiveHour, snapshot);
+        const weeklyCurrent = this._isCurrentLimit(weekly, snapshot);
+
+        if (fiveHourCurrent && weeklyCurrent)
+            return `${this._formatRemainingUsage(fiveHour)} - ${this._formatRemainingUsage(weekly)}`;
+
+        if (fiveHourCurrent)
+            return `5h ${this._formatRemainingUsage(fiveHour)}`;
+
+        if (weeklyCurrent)
+            return `Weekly ${this._formatRemainingUsage(weekly)}`;
+
+        if (fiveHour || weekly)
+            return `${this._formatRemainingUsage(fiveHour)} - ${this._formatRemainingUsage(weekly)}*`;
+
+        return "Usage unavailable";
     }
 
     _formatRemainingUsage(limit) {
@@ -480,11 +595,17 @@ class CodexUsageIndicator extends PanelMenu.Button {
     _updateLimitNotice(snapshot) {
         const notices = [];
 
-        if (this._isLimitReached(snapshot?.primary))
-            notices.push("You have reached your 5-hour usage.");
+        if (this._isLimitReached(snapshot?.fiveHour)) {
+            notices.push(this._isCurrentLimit(snapshot.fiveHour, snapshot)
+                ? "You have reached your 5-hour usage."
+                : "Last reported 5-hour usage was exhausted.");
+        }
 
-        if (this._isLimitReached(snapshot?.secondary))
-            notices.push("You have reached your weekly usage.");
+        if (this._isLimitReached(snapshot?.weekly)) {
+            notices.push(this._isCurrentLimit(snapshot.weekly, snapshot)
+                ? "You have reached your weekly usage."
+                : "Last reported weekly usage was exhausted.");
+        }
 
         this._limitNoticeItem.label.text = notices.join(" ");
         this._limitNoticeItem.item.visible = notices.length > 0;
@@ -493,6 +614,10 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
     _formatStatusLine(value) {
         return `Latest Codex update: ${this._formatAbsoluteTime(value)}`;
+    }
+
+    _formatLimitSeenAt(limit) {
+        return this._formatAbsoluteTime(limit.timestamp ?? this._getIsoTimestampFromFileModifiedAt(limit.fileModifiedAt));
     }
 
     _formatAbsoluteTime(isoTimestamp) {
@@ -519,6 +644,30 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
     _isLimitReached(limit) {
         return !!limit && this._getUsedPercent(limit) >= 100;
+    }
+
+    _isCurrentLimit(limit, snapshot) {
+        return !!limit && !!snapshot && limit.sortKey === snapshot.sortKey;
+    }
+
+    _isLimitRelevant(limit) {
+        if (!limit)
+            return false;
+
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const resetSeconds = Number(limit.resets_at);
+
+        if (Number.isFinite(resetSeconds) && resetSeconds <= nowSeconds)
+            return false;
+
+        const windowSeconds = Number(limit.window_minutes) * 60;
+        const seenSortKey = limit.sortKey || this._getSnapshotSortKey(limit);
+        const seenSeconds = Math.floor(seenSortKey / 1000000);
+
+        if (Number.isFinite(windowSeconds) && windowSeconds > 0 && seenSeconds > 0 && nowSeconds - seenSeconds > windowSeconds)
+            return false;
+
+        return true;
     }
 
     _getLocalDateTimeFromIso(isoTimestamp) {
