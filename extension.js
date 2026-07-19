@@ -89,11 +89,11 @@ class CodexUsageIndicator extends PanelMenu.Button {
 
         this.menu.box.add_style_class_name("codex-usage-menu");
 
-        this._refresh();
+        this._refreshSafely();
         this._refreshTimeoutId = GLib.timeout_add_seconds(
             GLib.PRIORITY_DEFAULT,
             REFRESH_INTERVAL_SECONDS,
-            () => this._refresh()
+            () => this._refreshSafely()
         );
     }
 
@@ -106,45 +106,49 @@ class CodexUsageIndicator extends PanelMenu.Button {
         super.destroy();
     }
 
-    _refresh() {
+    _refreshSafely() {
         try {
-            const rawSnapshot = this._readLatestSnapshot();
-            const snapshot = this._resolveSnapshot(rawSnapshot);
-
-            if (!snapshot) {
-                if (this._lastSnapshotSortKey !== null || this._label.text === "Loading Codex usage...") {
-                    this._label.text = "Usage unavailable";
-                    this._statusItem.label.text = "Latest Codex update: unavailable";
-                    this._limitNoticeItem.item.visible = false;
-                    this._limitNoticeSeparator.visible = false;
-
-                    this._setUsageMenuItemUnavailable(this._fiveHourItem);
-                    this._setUsageMenuItemUnavailable(this._weeklyItem);
-
-                    this._creditsItem.valueLabel.text = "0";
-                    this._lastSnapshotSortKey = null;
-                }
-
-                return GLib.SOURCE_CONTINUE;
-            }
-
-            this._label.text = this._formatPanelLabel(snapshot);
-
-            const statusTimestamp = snapshot.timestamp ?? this._getIsoTimestampFromFileModifiedAt(snapshot.fileModifiedAt);
-            this._statusItem.label.text = this._formatStatusLine(statusTimestamp);
-
-            this._setUsageMenuItem(this._fiveHourItem, snapshot.fiveHour, snapshot);
-            this._setUsageMenuItem(this._weeklyItem, snapshot.weekly, snapshot);
-
-            this._creditsItem.valueLabel.text = this._formatCredits(snapshot.credits);
-            this._updateLimitNotice(snapshot);
-            this._lastSnapshotSortKey = snapshot.sortKey;
-            this._lastResolvedSnapshot = snapshot;
+            this._refresh();
         } catch (error) {
-            log(`${UUID}: Failed to refresh usage: ${error.message}`);
+            logError(error, "Codex usage refresh failed");
         }
 
         return GLib.SOURCE_CONTINUE;
+    }
+
+    _refresh() {
+        const rawSnapshot = this._readLatestSnapshot();
+        const snapshot = this._resolveSnapshot(rawSnapshot);
+
+        if (!snapshot) {
+            if (this._lastSnapshotSortKey !== null || this._label.text === "Loading Codex usage...") {
+                this._label.text = "Usage unavailable";
+                this._statusItem.label.text = "Latest Codex update: unavailable";
+                this._limitNoticeItem.item.visible = false;
+                this._limitNoticeSeparator.visible = false;
+
+                this._setUsageMenuItemUnavailable(this._fiveHourItem);
+                this._setUsageMenuItemUnavailable(this._weeklyItem);
+
+                this._creditsItem.valueLabel.text = "0";
+                this._lastSnapshotSortKey = null;
+            }
+
+            return;
+        }
+
+        this._label.text = this._formatPanelLabel(snapshot);
+
+        const statusTimestamp = snapshot.timestamp ?? this._getIsoTimestampFromFileModifiedAt(snapshot.fileModifiedAt);
+        this._statusItem.label.text = this._formatStatusLine(statusTimestamp);
+
+        this._setUsageMenuItem(this._fiveHourItem, snapshot.fiveHour, snapshot);
+        this._setUsageMenuItem(this._weeklyItem, snapshot.weekly, snapshot);
+
+        this._creditsItem.valueLabel.text = this._formatCredits(snapshot.credits);
+        this._updateLimitNotice(snapshot);
+        this._lastSnapshotSortKey = snapshot.sortKey;
+        this._lastResolvedSnapshot = snapshot;
     }
 
     _createCenteredMessageItem(styleClass = "codex-usage-status-label") {

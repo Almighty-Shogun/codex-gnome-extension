@@ -41,7 +41,7 @@ The extension gives GNOME Shell a lightweight view of Codex rate-limit data with
 
 ## How It Works
 
-Every 30 seconds the extension:
+On a normal cycle, every 30 seconds the extension:
 
 1. Scans `~/.codex/sessions` for recent `.jsonl` session files.
 2. Checks each recent file by path and microsecond-precision modified time, reusing cached parse results for unchanged files.
@@ -49,6 +49,8 @@ Every 30 seconds the extension:
 4. Classifies each reported limit by `window_minutes`, where `300` is the 5-hour window and `10080` is the weekly window.
 5. Keeps the newest known value for each active window independently, so a weekly-only update does not overwrite or masquerade as 5-hour usage.
 6. Updates the panel label and popup contents from the newest locally reported data.
+
+The refresh loop catches and logs refresh errors inside the timer callback, then always returns `GLib.SOURCE_CONTINUE` so a parsing or filesystem error does not stop future updates.
 
 ## Installation & Updating
 
