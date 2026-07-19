@@ -26,7 +26,7 @@ Selecting the indicator opens a popup with:
 - Weekly usage remaining, when Codex reports or has previously reported it
 - Reset timestamps for current limits
 - Last-reported timestamps for limits that are no longer present in the latest Codex update
-- Remaining credits, when present in the Codex session data
+- Credits remaining, shown as `0` when Codex does not report a credit value
 - A notice when the 5-hour or weekly usage window has been exhausted
 - A status line showing when the latest Codex update was seen
 
@@ -85,7 +85,6 @@ The update script fetches changes from GitHub, fast-forwards the current branch,
 - The extension reads Codex session data from `~/.codex/sessions`; it does not query a live API directly.
 - The extension displays `Usage unavailable` until a valid Codex usage snapshot is found.
 - If Codex stops reporting a specific window, the popup keeps the last known value while that usage window is still relevant and marks when it was last reported.
-- If only stale values are available for the panel label, the label includes `*` and the popup shows the last-reported timestamps.
-- Credits are normalized before display. For example, credit objects with fields like `balance`, `has_credits`, or `unlimited` are rendered as a simple readable value.
+- Credits are always shown and normalized before display. Missing credits and `has_credits: false` are rendered as `0`; fields like `balance`, `remaining`, or `unlimited` are rendered as simple readable values.
 - When a limit reaches `100%` used, the popup shows an explicit notice for the exhausted 5-hour or weekly window.
 - The menu width is intentionally compact and the progress bars are sized to match.

@@ -557,7 +557,7 @@ class CodexUsageIndicator extends PanelMenu.Button {
             return `Weekly ${this._formatRemainingUsage(weekly)}`;
 
         if (fiveHour || weekly)
-            return `${this._formatRemainingUsage(fiveHour)} - ${this._formatRemainingUsage(weekly)}*`;
+            return `${this._formatRemainingUsage(fiveHour)} - ${this._formatRemainingUsage(weekly)}`;
 
         return "Usage unavailable";
     }
@@ -599,17 +599,11 @@ class CodexUsageIndicator extends PanelMenu.Button {
     _updateLimitNotice(snapshot) {
         const notices = [];
 
-        if (this._isLimitReached(snapshot?.fiveHour)) {
-            notices.push(this._isCurrentLimit(snapshot.fiveHour, snapshot)
-                ? "You have reached your 5-hour usage."
-                : "Last reported 5-hour usage was exhausted.");
-        }
+        if (this._isLimitReached(snapshot?.fiveHour))
+            notices.push("5h limit reached.");
 
-        if (this._isLimitReached(snapshot?.weekly)) {
-            notices.push(this._isCurrentLimit(snapshot.weekly, snapshot)
-                ? "You have reached your weekly usage."
-                : "Last reported weekly usage was exhausted.");
-        }
+        if (this._isLimitReached(snapshot?.weekly))
+            notices.push("Weekly limit reached.");
 
         this._limitNoticeItem.label.text = notices.join(" ");
         this._limitNoticeItem.item.visible = notices.length > 0;
